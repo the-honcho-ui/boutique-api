@@ -54,7 +54,27 @@ class StorefrontController extends Controller
             abort(404);
         }
 
-        return response()->json($this->transformProduct($product->load('variants')));
+        $product->load('variants');
+        $recommendations = $store->products()
+            ->where('is_published', true)
+            ->whereKeyNot($product->id)
+            ->with('variants')
+            ->get()
+            ->map(fn (Product $candidate) => [
+                'product' => $candidate,
+                'score' => $this->getRecommendationScore($product, $candidate),
+            ])
+            ->filter(fn (array $entry) => $entry['score'] > 0)
+            ->sortByDesc('score')
+            ->take(4)
+            ->map(fn (array $entry) => $this->transformProduct($entry['product']))
+            ->values()
+            ->all();
+
+        return response()->json([
+            ...$this->transformProduct($product),
+            'recommendations' => $recommendations,
+        ]);
     }
 
     public function categories(string $slug)
@@ -73,6 +93,11 @@ class StorefrontController extends Controller
     private function transformProduct(Product $product): array
     {
         $productArray = $product->toArray();
+        $productArray['tags'] = array_values(array_filter([
+            $product->category,
+            $product->style,
+            $product->collection,
+        ]));
         $productArray['variants'] = $product->variants->map(function ($variant) {
             $availableQuantity = ReservationService::availableQuantity($variant);
 
@@ -85,5 +110,24 @@ class StorefrontController extends Controller
         })->all();
 
         return $productArray;
+    }
+
+    private function getRecommendationScore(Product $currentProduct, Product $candidate): int
+    {
+        $score = 0;
+
+        if ($currentProduct->category && $currentProduct->category === $candidate->category) {
+            $score += 3;
+        }
+
+        if ($currentProduct->style && $currentProduct->style === $candidate->style) {
+            $score += 2;
+        }
+
+        if ($currentProduct->collection && $currentProduct->collection === $candidate->collection) {
+            $score += 2;
+        }
+
+        return $score;
     }
 }
